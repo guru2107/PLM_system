@@ -39,7 +39,7 @@ def get_ecos(stage_id: Optional[int] = None, eco_type: Optional[str] = None, sta
 
 @router.get("/stages", response_model=List[ECOStageResponse])
 def get_eco_stages(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    stages = db.query(ECOStage).order_by(ECOStage.order.asc()).all()
+    stages = ensure_default_stages(db)
     return stages
 
 
@@ -118,17 +118,33 @@ def approve_eco(id: int, db: Session = Depends(get_db), current_user: User = Dep
     if eco.status == ECOStatus.applied:
         raise HTTPException(status_code=400, detail="ECO is already approved")
 
-    stage = db.query(ECOStage).filter(ECOStage.id == eco.stage_id).first()
-    if stage and stage.requires_approval:
+    stages = db.query(ECOStage).order_by(ECOStage.order.asc()).all()
+    if not stages:
+        raise HTTPException(status_code=500, detail="No ECO stages configured")
+
+    current_index = -1
+    stage = None
+    for idx, candidate in enumerate(stages):
+        if candidate.id == eco.stage_id:
+            current_index = idx
+            stage = candidate
+            break
+
+    if stage is None:
+        raise HTTPException(status_code=400, detail="ECO is in an invalid stage")
+
+    if stage.requires_approval:
         if stage.approver_user_id and current_user.id != stage.approver_user_id:
             raise HTTPException(status_code=403, detail="This stage can only be approved by the assigned user")
         if stage.approver_role and current_user.role.value != stage.approver_role and current_user.role != RoleEnum.admin:
             raise HTTPException(status_code=403, detail="Your role cannot approve this stage")
 
-    done_stage = db.query(ECOStage).filter(ECOStage.name == "Done").first()
-    if done_stage:
-        eco.stage_id = done_stage.id
-    eco.status = ECOStatus.applied
+    next_stage = stages[current_index + 1] if current_index + 1 < len(stages) else None
+    if next_stage:
+        eco.stage_id = next_stage.id
+        eco.status = ECOStatus.applied if next_stage.name.lower() == "done" else ECOStatus.open
+    else:
+        eco.status = ECOStatus.applied
 
     db.commit()
     db.refresh(eco)

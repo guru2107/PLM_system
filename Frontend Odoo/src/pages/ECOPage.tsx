@@ -8,10 +8,24 @@ import { showError, showSuccess } from '../utils/toast';
 
 interface ECOItem {
   id: string;
+  title: string;
   number: string;
   type: string;
   status: 'new' | 'approval' | 'done';
+  backendStatus: 'open' | 'applied';
+  stageId: number;
+  stageName: string;
   createdAt: string;
+}
+
+interface ECOStage {
+  id: number;
+  name: string;
+  requires_approval: boolean;
+  approver_role?: string | null;
+  approver_user_id?: number | null;
+  order: number;
+  is_default: boolean;
 }
 
 export const ECOPage: React.FC = () => {
@@ -21,6 +35,7 @@ export const ECOPage: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedECO, setSelectedECO] = useState<ECOItem | null>(null);
   const [ecos, setEcos] = useState<ECOItem[]>([]);
+  const [stages, setStages] = useState<ECOStage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [boms, setBoms] = useState<Array<{ id: number; product_id: number }>>([]);
@@ -34,26 +49,55 @@ export const ECOPage: React.FC = () => {
     versionUpdate: true,
   });
 
+  const getWorkflowStatus = (backendStatus: string, stageName: string): 'new' | 'approval' | 'done' => {
+    if (backendStatus === 'applied') return 'done';
+    if (stageName.toLowerCase() === 'new') return 'new';
+    return 'approval';
+  };
+
+  const refreshEcos = async (knownStages: ECOStage[]): Promise<ECOItem[]> => {
+    const response = await apiClient.get('/ecos');
+    const rawEcos = Array.isArray(response.data) ? response.data : [];
+
+    const stageMap = new Map<number, ECOStage>();
+    knownStages.forEach((stage) => stageMap.set(stage.id, stage));
+
+    const mapped: ECOItem[] = rawEcos.map((item: any) => {
+      const ecoStage = stageMap.get(item.stage_id);
+      const stageName = ecoStage?.name ?? 'Unknown';
+      const backendStatus = item.status === 'applied' ? 'applied' : 'open';
+      return {
+        id: String(item.id),
+        title: item.title ?? `ECO-${String(item.id).padStart(4, '0')}`,
+        number: `ECO-${String(item.id).padStart(4, '0')}`,
+        type: item.eco_type === 'bom' ? 'BOM' : 'Product',
+        status: getWorkflowStatus(backendStatus, stageName),
+        backendStatus,
+        stageId: item.stage_id,
+        stageName,
+        createdAt: item.created_at ?? new Date().toISOString(),
+      };
+    });
+
+    setEcos(mapped);
+    return mapped;
+  };
+
   useEffect(() => {
-    const fetchEcos = async () => {
+    const fetchData = async () => {
       setIsLoading(true);
       try {
-        const response = await apiClient.get('/ecos');
-        const rawEcos = Array.isArray(response.data) ? response.data : [];
-        const mapped: ECOItem[] = rawEcos.map((item: any) => ({
-          id: String(item.id),
-          number: `ECO-${String(item.id).padStart(4, '0')}`,
-          type: item.eco_type === 'bom' ? 'BOM' : 'Product',
-          status: item.status === 'applied' ? 'done' : 'approval',
-          createdAt: item.created_at ?? new Date().toISOString(),
-        }));
-        setEcos(mapped);
+        const stagesRes = await apiClient.get('/ecos/stages');
+        const stageRows = Array.isArray(stagesRes.data) ? stagesRes.data : [];
+        const orderedStages = [...stageRows].sort((a: ECOStage, b: ECOStage) => a.order - b.order);
+        setStages(orderedStages);
+        await refreshEcos(orderedStages);
       } finally {
         setIsLoading(false);
       }
     };
 
-    fetchEcos();
+    fetchData();
   }, []);
 
   useEffect(() => {
@@ -76,23 +120,25 @@ export const ECOPage: React.FC = () => {
     loadOptions();
   }, []);
 
-  const ecoSteps = [
-    { id: '1', label: 'New', description: 'Initial ECO creation' },
-    { id: '2', label: 'Approval', description: 'Awaiting approval' },
-    { id: '3', label: 'Done', description: 'Changes implemented' },
-  ];
+  const ecoSteps = stages.length > 0
+    ? stages.map((stage) => ({
+        id: String(stage.id),
+        label: stage.name,
+        description: stage.requires_approval
+          ? `Approval required${stage.approver_role ? ` (${stage.approver_role})` : ''}`
+          : 'No approval required',
+      }))
+    : [
+        { id: '1', label: 'New', description: 'Initial ECO creation' },
+        { id: '2', label: 'Approval', description: 'Awaiting approval' },
+        { id: '3', label: 'Done', description: 'Changes implemented' },
+      ];
 
-  const getStatusIndex = (status: string) => {
-    switch (status) {
-      case 'new':
-        return 0;
-      case 'approval':
-        return 1;
-      case 'done':
-        return 2;
-      default:
-        return 0;
-    }
+  const getStatusIndex = (eco: ECOItem | null) => {
+    if (!eco || stages.length === 0) return 0;
+    if (eco.backendStatus === 'applied') return Math.max(stages.length - 1, 0);
+    const index = stages.findIndex((stage) => stage.id === eco.stageId);
+    return index >= 0 ? index : 0;
   };
 
   const getStatusColor = (status: string) => {
@@ -108,19 +154,6 @@ export const ECOPage: React.FC = () => {
     }
   };
 
-  const refreshEcos = async () => {
-    const response = await apiClient.get('/ecos');
-    const rawEcos = Array.isArray(response.data) ? response.data : [];
-    const mapped: ECOItem[] = rawEcos.map((item: any) => ({
-      id: String(item.id),
-      number: `ECO-${String(item.id).padStart(4, '0')}`,
-      type: item.eco_type === 'bom' ? 'BOM' : 'Product',
-      status: item.status === 'applied' ? 'done' : 'approval',
-      createdAt: item.created_at ?? new Date().toISOString(),
-    }));
-    setEcos(mapped);
-  };
-
   const handleApproveECO = async () => {
     if (!selectedECO) return;
     if (!canApprove) {
@@ -129,10 +162,21 @@ export const ECOPage: React.FC = () => {
     }
 
     try {
-      await apiClient.post(`/ecos/${selectedECO.id}/approve`);
-      showSuccess('ECO approved successfully.');
-      setSelectedECO(null);
-      await refreshEcos();
+      const response = await apiClient.post(`/ecos/${selectedECO.id}/approve`);
+      const updated = response.data;
+
+      const currentStages = stages.length > 0 ? stages : [];
+      const refreshedEcos = await refreshEcos(currentStages);
+
+      const updatedStage = currentStages.find((stage) => stage.id === updated?.stage_id);
+      if (updated?.status === 'applied') {
+        showSuccess('ECO approved and completed.');
+      } else {
+        showSuccess(`ECO moved to ${updatedStage?.name ?? 'next stage'}.`);
+      }
+
+      const refreshed = refreshedEcos.find((eco) => eco.id === selectedECO.id);
+      setSelectedECO(refreshed ?? null);
     } catch (error: any) {
       showError(error?.response?.data?.detail || 'Failed to approve ECO.');
     }
@@ -169,7 +213,7 @@ export const ECOPage: React.FC = () => {
         effectiveDate: '',
         versionUpdate: true,
       });
-      await refreshEcos();
+      await refreshEcos(stages);
     } catch (error: any) {
       showError(error?.response?.data?.detail || 'Failed to create ECO.');
     } finally {
@@ -255,25 +299,54 @@ export const ECOPage: React.FC = () => {
             </h4>
             <Stepper
               steps={ecoSteps}
-              currentStep={getStatusIndex(selectedECO?.status || 'new')}
+              currentStep={getStatusIndex(selectedECO)}
             />
+          </div>
+
+          <div>
+            <h4 className="text-sm font-semibold text-dark-900 dark:text-white mb-3">
+              Approval Procedure
+            </h4>
+            <div className="space-y-2">
+              {stages.map((stage, index) => {
+                const currentIndex = getStatusIndex(selectedECO);
+                const isCompleted = index < currentIndex || (selectedECO?.backendStatus === 'applied' && index <= currentIndex);
+                const isCurrent = selectedECO?.backendStatus !== 'applied' && index === currentIndex;
+
+                return (
+                  <div key={stage.id} className="flex items-center justify-between rounded-lg border border-gray-200 dark:border-dark-700 px-3 py-2">
+                    <div>
+                      <p className="text-sm font-medium text-dark-900 dark:text-white">{index + 1}. {stage.name}</p>
+                      <p className="text-xs text-gray-600 dark:text-gray-400">
+                        {stage.requires_approval
+                          ? `Approval required${stage.approver_role ? ` by ${stage.approver_role}` : ''}${stage.approver_user_id ? ` (User #${stage.approver_user_id})` : ''}`
+                          : 'No approval required'}
+                      </p>
+                    </div>
+                    <Badge variant={isCurrent ? 'primary' : isCompleted ? 'success' : 'gray'}>
+                      {isCurrent ? 'Current' : isCompleted ? 'Completed' : 'Pending'}
+                    </Badge>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           {/* Action Buttons */}
           <div className="flex gap-3 pt-4 border-t border-gray-200 dark:border-dark-700">
-            {selectedECO?.status === 'approval' && canApprove && (
+            {selectedECO?.backendStatus !== 'applied' && canApprove && (
               <>
                 <Button variant="primary" className="flex-1" onClick={handleApproveECO}>
-                  Approve
+                  Approve Next Step
                 </Button>
               </>
             )}
-            {selectedECO?.status === 'approval' && !canApprove && (
+            {selectedECO?.backendStatus !== 'applied' && !canApprove && (
               <p className="text-sm text-gray-600 dark:text-gray-400 w-full text-center">
                 Waiting for approver action.
               </p>
             )}
-            {selectedECO?.status === 'done' && (
+            {selectedECO?.backendStatus === 'applied' && (
               <p className="text-sm text-green-600 dark:text-green-400 w-full text-center">
                 ✓ This ECO has been approved and implemented
               </p>
