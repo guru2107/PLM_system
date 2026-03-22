@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite3
+.venv/
+venv/
+plm-backend/venv/
+
+# Environment files
+.env
+*.env
+
+# Node
+node_modules/
+Frontend Odoo/node_modules/
+Frontend Odoo/dist/
+
+# OS / Editor
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+plm-backend/error_log.txt
